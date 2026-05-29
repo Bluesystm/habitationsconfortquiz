@@ -1,10 +1,18 @@
 const express = require('express');
 const path = require('path');
+const crypto = require('crypto');
 const twilio = require('twilio');
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ═══════════════════════════════════════════════════════════════
+// META CONVERSIONS API (CAPI) — Configuration
+// ═══════════════════════════════════════════════════════════════
+const META_PIXEL_ID = '1544867403647834';
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE || ''; // optionnel pour tester
 
 // Middleware pour parser les requetes Twilio (form-encoded) et JSON
 app.use(express.urlencoded({ extended: true }));
@@ -214,6 +222,109 @@ app.get('/ivr-status', (req, res) => {
       numero: DEPARTEMENTS[k].numero
     }))
   });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// META CAPI — Endpoint serveur pour deduplication Pixel + CAPI
+// ═══════════════════════════════════════════════════════════════
+
+// Hash SHA-256 (lowercase, trim) — exigence Meta pour user_data
+function hashSHA256(value) {
+  if (!value) return null;
+  const cleaned = String(value).trim().toLowerCase();
+  return crypto.createHash('sha256').update(cleaned).digest('hex');
+}
+
+// Normaliser un numéro de téléphone canadien au format E.164 (+1XXXXXXXXXX)
+function normalizePhone(phone) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 10) return '1' + digits;
+  if (digits.length === 11 && digits.startsWith('1')) return digits;
+  return digits;
+}
+
+app.post('/api/capi-lead', async (req, res) => {
+  try {
+    if (!META_ACCESS_TOKEN) {
+      console.warn('[CAPI] META_ACCESS_TOKEN manquant — event ignoré');
+      return res.status(200).json({ ok: false, reason: 'no_token' });
+    }
+
+    const {
+      event_id,
+      event_source_url,
+      telephone,
+      ville,
+      fbp,
+      fbc
+    } = req.body;
+
+    if (!event_id) {
+      return res.status(400).json({ ok: false, reason: 'missing_event_id' });
+    }
+
+    // Données client
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    const userAgent = req.headers['user-agent'] || '';
+
+    const userData = {
+      ph: telephone ? [hashSHA256(normalizePhone(telephone))] : undefined,
+      ct: ville ? [hashSHA256(ville)] : undefined,
+      st: [hashSHA256('quebec')],
+      country: [hashSHA256('ca')],
+      client_ip_address: ip,
+      client_user_agent: userAgent,
+      fbp: fbp || undefined,
+      fbc: fbc || undefined
+    };
+
+    // Nettoyer les undefined
+    Object.keys(userData).forEach(k => userData[k] === undefined && delete userData[k]);
+
+    const payload = {
+      data: [{
+        event_name: 'Lead',
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: event_id,
+        action_source: 'website',
+        event_source_url: event_source_url || 'https://habitationsconfortquiz-production.up.railway.app',
+        user_data: userData,
+        custom_data: {
+          content_name: 'Quiz Isolation Entretoit HC',
+          content_category: 'isolation',
+          currency: 'CAD',
+          value: 0
+        }
+      }]
+    };
+
+    if (META_TEST_EVENT_CODE) {
+      payload.test_event_code = META_TEST_EVENT_CODE;
+    }
+
+    const url = `https://graph.facebook.com/v18.0/${META_PIXEL_ID}/events?access_token=${META_ACCESS_TOKEN}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      console.error('[CAPI] Erreur Meta:', result);
+      return res.status(200).json({ ok: false, error: result });
+    }
+
+    console.log('[CAPI] Lead envoyé OK — event_id:', event_id, 'received:', result.events_received);
+    return res.status(200).json({ ok: true, events_received: result.events_received });
+
+  } catch (err) {
+    console.error('[CAPI] Exception:', err);
+    return res.status(200).json({ ok: false, error: err.message });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════

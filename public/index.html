@@ -1799,15 +1799,36 @@ function submitQuiz() {
   currentStep = 13;
   showStep(13);
 
-  // ═══ Meta Pixel — Track Lead event ═══
+  // ═══ Meta Pixel + CAPI — Track Lead event (dédupliqué via event_id) ═══
+  const eventId = 'lead_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+  // 1) Pixel browser
   if (typeof fbq !== 'undefined') {
     fbq('track', 'Lead', {
       content_name: 'Quiz Isolation Entretoit HC',
       content_category: 'isolation',
       value: 0,
       currency: 'CAD'
-    });
+    }, { eventID: eventId });
   }
+
+  // 2) CAPI serveur (déduplication via event_id)
+  function getCookie(name) {
+    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : null;
+  }
+  fetch('/api/capi-lead', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event_id: eventId,
+      event_source_url: window.location.href,
+      telephone: phone,
+      ville: answers.ville || '',
+      fbp: getCookie('_fbp'),
+      fbc: getCookie('_fbc')
+    })
+  }).catch(err => console.error('CAPI error:', err));
   // ══ Envoyer les données au webhook Google Apps Script ══
   const webhookData = {
     superficie: answers.superficie || '',
