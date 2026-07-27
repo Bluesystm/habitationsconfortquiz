@@ -328,6 +328,18 @@ app.post('/api/capi-lead', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// ATTRIBUTION — IP client (le navigateur ne peut pas la connaitre)
+// Lue au chargement du quiz, stockee cote client, puis transmise au
+// Sheet avec le lead pour que le CRM puisse la renvoyer a Meta sur les
+// events ulterieurs (Schedule / Purchase / LeadLost).
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/client-meta', (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+    .split(',')[0].trim();
+  res.json({ ip });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // QUIZ — Fichiers statiques
 // ═══════════════════════════════════════════════════════════════
 

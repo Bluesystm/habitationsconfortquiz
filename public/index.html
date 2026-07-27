@@ -1811,6 +1811,10 @@ function submitQuiz() {
   // ═══ Meta Pixel + CAPI — Track Lead event (dédupliqué via event_id) ═══
   const eventId = 'lead_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
+  // Attribution capturée à l'arrivée sur la page (voir bas de fichier).
+  // Sert à la fois au CAPI ci-dessous et au webhook Sheet plus bas.
+  const attribution = hcGetAttribution();
+
   // 1) Pixel browser
   if (typeof fbq !== 'undefined') {
     fbq('track', 'Lead', {
@@ -1834,8 +1838,8 @@ function submitQuiz() {
       event_source_url: window.location.href,
       telephone: phone,
       ville: answers.ville || '',
-      fbp: getCookie('_fbp'),
-      fbc: getCookie('_fbc')
+      fbp: attribution.fbp,
+      fbc: attribution.fbc
     })
   }).catch(err => console.error('CAPI error:', err));
   // ══ Envoyer les données au webhook Google Apps Script ══
@@ -1851,7 +1855,20 @@ function submitQuiz() {
     barrages_glace: answers.barrages_glace || '',
     avantages: answers.avantages || [],
     ville: answers.ville || '',
-    telephone: phone
+    telephone: phone,
+    // ── Attribution publicitaire (nouvelles colonnes du Sheet) ──
+    // Permet au CRM de savoir de quelle pub vient le lead, et de
+    // renvoyer fbp/fbc/ip/ua à Meta sur les events ultérieurs.
+    ad_id:        attribution.ad_id        || '',
+    utm_source:   attribution.utm_source   || '',
+    utm_medium:   attribution.utm_medium   || '',
+    utm_content:  attribution.utm_content  || '',
+    utm_campaign: attribution.utm_campaign || '',
+    fbclid:       attribution.fbclid       || '',
+    fbp:          attribution.fbp          || '',
+    fbc:          attribution.fbc          || '',
+    client_ip:    attribution.ip           || '',
+    client_ua:    attribution.user_agent   || ''
   };
 
   // REMPLACER cette URL par l'URL de déploiement de ton Google Apps Script
@@ -1868,6 +1885,99 @@ function submitQuiz() {
 
   console.log('Quiz HC — Réponses:', JSON.stringify(webhookData, null, 2));
 }
+
+// ════════════════════════════════════════════════════════════════
+// ATTRIBUTION PUBLICITAIRE
+//
+// Les paramètres d'URL (ad_id, utm_*, fbclid) ne sont présents qu'à
+// l'arrivée sur la page. Le visiteur remplit ensuite le quiz pendant
+// plusieurs minutes — on les fige donc en sessionStorage dès le
+// chargement pour qu'ils soient encore là au moment du submit.
+//
+// Ces données partent ensuite vers le Sheet avec le lead, puis vers le
+// CRM, qui pourra les renvoyer à Meta sur les events ultérieurs
+// (Schedule, Purchase, LeadLost) — ce qu'il ne peut pas faire aujourd'hui.
+// ════════════════════════════════════════════════════════════════
+var HC_ATTRIB_KEY = 'hc_attribution';
+
+function hcGetCookie(name) {
+  var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : null;
+}
+
+function hcReadStore() {
+  try { return JSON.parse(sessionStorage.getItem(HC_ATTRIB_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+
+function hcWriteStore(data) {
+  try { sessionStorage.setItem(HC_ATTRIB_KEY, JSON.stringify(data)); }
+  catch (e) { /* sessionStorage indisponible — on continue sans attribution */ }
+}
+
+// Assemble les données d'attribution au moment du submit.
+function hcGetAttribution() {
+  var a = hcReadStore();
+
+  // fbp : cookie posé par le Pixel Meta.
+  a.fbp = hcGetCookie('_fbp') || null;
+
+  // fbc : normalement posé par le Pixel quand l'URL contient fbclid.
+  // S'il manque (Pixel chargé tard, bloqué, ou navigation interne),
+  // on le reconstruit au format attendu par Meta : fb.1.<ms>.<fbclid>
+  var fbcCookie = hcGetCookie('_fbc');
+  if (fbcCookie) {
+    a.fbc = fbcCookie;
+  } else if (a.fbclid) {
+    a.fbc = 'fb.1.' + Date.now() + '.' + a.fbclid;
+  } else {
+    a.fbc = null;
+  }
+
+  return a;
+}
+
+// Capture immédiate au chargement de la page.
+(function hcCaptureAttribution() {
+  var existing = hcReadStore();
+  var params;
+  try { params = new URLSearchParams(window.location.search); }
+  catch (e) { return; }
+
+  // Première valeur vue gagne : si le visiteur navigue et perd les
+  // paramètres, on garde ceux de son arrivée.
+  function pick(key) {
+    var v = params.get(key);
+    if (v) return String(v).slice(0, 300);
+    return existing[key] || null;
+  }
+
+  var data = {
+    ad_id:        pick('ad_id'),
+    utm_source:   pick('utm_source'),
+    utm_medium:   pick('utm_medium'),
+    utm_content:  pick('utm_content'),
+    utm_campaign: pick('utm_campaign'),
+    fbclid:       pick('fbclid'),
+    landing_url:  existing.landing_url || String(window.location.href).slice(0, 500),
+    user_agent:   navigator.userAgent ? String(navigator.userAgent).slice(0, 500) : null,
+    ip:           existing.ip || null
+  };
+  hcWriteStore(data);
+
+  // L'IP n'est connue que du serveur. Appel non bloquant, une seule fois.
+  if (!data.ip) {
+    fetch('/api/client-meta')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ip) return;
+        var cur = hcReadStore();
+        cur.ip = j.ip;
+        hcWriteStore(cur);
+      })
+      .catch(function () { /* sans IP, le reste de l'attribution fonctionne */ });
+  }
+})();
 </script>
 
 </body>
