@@ -329,14 +329,65 @@ app.post('/api/capi-lead', async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // ATTRIBUTION — IP client (le navigateur ne peut pas la connaitre)
-// Lue au chargement du quiz, stockee cote client, puis transmise au
-// Sheet avec le lead pour que le CRM puisse la renvoyer a Meta sur les
-// events ulterieurs (Schedule / Purchase / LeadLost).
 // ═══════════════════════════════════════════════════════════════
 app.get('/api/client-meta', (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
     .split(',')[0].trim();
   res.json({ ip });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ATTRIBUTION — relai vers le CRM
+//
+// Le navigateur poste ici (meme origine, pas de CORS). Ce serveur ajoute
+// l'IP reelle du visiteur et relaie au CRM avec la cle partagee, qui ne
+// quitte jamais le serveur.
+//
+// ADDITIF : n'affecte pas l'envoi vers Apps Script / Google Sheet, qui
+// continue exactement comme avant. Si ce relai echoue, le lead arrive
+// quand meme normalement dans le Sheet et le CRM.
+// ═══════════════════════════════════════════════════════════════
+const CRM_ATTRIBUTION_URL = process.env.CRM_ATTRIBUTION_URL
+  || 'https://habitations-confort-crm-production.up.railway.app/api/attribution';
+
+app.post('/api/attribution', async (req, res) => {
+  const key = process.env.HC_ATTRIBUTION_KEY;
+  if (!key) {
+    console.warn('[Attribution] HC_ATTRIBUTION_KEY absente — relai desactive');
+    return res.status(200).json({ ok: false, reason: 'not_configured' });
+  }
+  try {
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+      .split(',')[0].trim();
+
+    const payload = {
+      telephone:    req.body?.telephone    || '',
+      ad_id:        req.body?.ad_id        || '',
+      utm_source:   req.body?.utm_source   || '',
+      utm_medium:   req.body?.utm_medium   || '',
+      utm_content:  req.body?.utm_content  || '',
+      utm_campaign: req.body?.utm_campaign || '',
+      fbclid:       req.body?.fbclid       || '',
+      fbp:          req.body?.fbp          || '',
+      fbc:          req.body?.fbc          || '',
+      client_ua:    req.headers['user-agent'] || '',
+      client_ip:    ip,
+    };
+
+    const r = await fetch(CRM_ATTRIBUTION_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-HC-Key': key },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) console.warn('[Attribution] CRM a refuse — status', r.status);
+    return res.status(200).json({ ok: r.ok, stored: !!j.stored });
+  } catch (err) {
+    // Jamais bloquant : le lead part vers le Sheet quoi qu'il arrive.
+    console.warn('[Attribution] relai echoue:', err.message);
+    return res.status(200).json({ ok: false });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════

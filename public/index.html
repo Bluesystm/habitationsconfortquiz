@@ -1855,20 +1855,7 @@ function submitQuiz() {
     barrages_glace: answers.barrages_glace || '',
     avantages: answers.avantages || [],
     ville: answers.ville || '',
-    telephone: phone,
-    // ── Attribution publicitaire (nouvelles colonnes du Sheet) ──
-    // Permet au CRM de savoir de quelle pub vient le lead, et de
-    // renvoyer fbp/fbc/ip/ua à Meta sur les events ultérieurs.
-    ad_id:        attribution.ad_id        || '',
-    utm_source:   attribution.utm_source   || '',
-    utm_medium:   attribution.utm_medium   || '',
-    utm_content:  attribution.utm_content  || '',
-    utm_campaign: attribution.utm_campaign || '',
-    fbclid:       attribution.fbclid       || '',
-    fbp:          attribution.fbp          || '',
-    fbc:          attribution.fbc          || '',
-    client_ip:    attribution.ip           || '',
-    client_ua:    attribution.user_agent   || ''
+    telephone: phone
   };
 
   // REMPLACER cette URL par l'URL de déploiement de ton Google Apps Script
@@ -1882,6 +1869,26 @@ function submitQuiz() {
   })
   .then(() => console.log('Quiz HC — Données envoyées au webhook'))
   .catch(err => console.error('Erreur webhook:', err));
+
+  // ══ Attribution publicitaire → CRM (en plus du Sheet, ne le remplace pas) ══
+  // Permet au CRM de savoir de quelle pub vient ce lead, et de le redire à
+  // Meta quand le lead devient un RDV ou une vente. Sans effet sur l'envoi
+  // vers Apps Script ci-dessus : si celui-ci échoue, le lead arrive quand même.
+  fetch('/api/attribution', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telephone:    phone,
+      ad_id:        attribution.ad_id        || '',
+      utm_source:   attribution.utm_source   || '',
+      utm_medium:   attribution.utm_medium   || '',
+      utm_content:  attribution.utm_content  || '',
+      utm_campaign: attribution.utm_campaign || '',
+      fbclid:       attribution.fbclid       || '',
+      fbp:          attribution.fbp          || '',
+      fbc:          attribution.fbc          || ''
+    })
+  }).catch(function () { /* non bloquant */ });
 
   console.log('Quiz HC — Réponses:', JSON.stringify(webhookData, null, 2));
 }
